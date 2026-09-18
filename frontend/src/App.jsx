@@ -6,7 +6,7 @@ import PolicySource from "./components/PolicySource";
 import AuditTrail from "./components/AuditTrail";
 import "./index.css";
 
-//  backend url
+
 const API_URL =
   import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
