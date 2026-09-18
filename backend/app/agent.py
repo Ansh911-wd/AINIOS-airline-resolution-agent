@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 from dotenv import load_dotenv
 from google import genai
@@ -16,7 +17,8 @@ if not api_key:
     raise RuntimeError("GEMINI_API_KEY is not configured.")
 
 client = genai.Client(api_key=api_key)
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 
 EXTRACTION_PROMPT = """
@@ -93,8 +95,9 @@ Rules:
 def extract_intent(message):
     """
     Try Gemini first.
-    If Gemini is temporarily unavailable, use a lightweight
-    rule-based fallback so the resolution agent remains usable.
+
+    If Gemini is unavailable or quota is exhausted,
+    use a lightweight rule-based fallback.
     """
 
     try:
@@ -113,20 +116,22 @@ def extract_intent(message):
         return json.loads(response.text)
 
     except Exception as e:
-        print(f"Gemini unavailable, using fallback intent extraction: {e}")
+        print(
+            f"Gemini unavailable, using fallback intent extraction: {e}"
+        )
 
         text = message.lower()
 
         status = None
         delay_hours = None
 
+        # Detect cancellation
         if "cancel" in text or "cancelled" in text:
             status = "cancelled"
 
-        if "delay" in text:
+        # Detect delay and delay duration
+        if "delay" in text or "delayed" in text:
             status = "delayed"
-
-            import re
 
             match = re.search(
                 r"(\d+(?:\.\d+)?)\s*(?:hour|hours|hr|hrs)",
@@ -136,6 +141,7 @@ def extract_intent(message):
             if match:
                 delay_hours = float(match.group(1))
 
+        # Refund
         requested_refund = any(
             word in text
             for word in [
@@ -145,6 +151,7 @@ def extract_intent(message):
             ]
         )
 
+        # Hotel
         requested_hotel = any(
             word in text
             for word in [
@@ -154,28 +161,31 @@ def extract_intent(message):
             ]
         )
 
+        # Full-night hotel
         requested_full_night_hotel = (
             "full night" in text
             or "whole night" in text
             or "entire night" in text
         )
 
+        # Higher fare / upgrade
         requested_higher_fare = any(
             phrase in text
             for phrase in [
                 "higher fare",
                 "upgrade",
                 "business class",
-                "business-class"
+                "business-class",
+                "more expensive flight"
             ]
         )
 
+        # Fare difference
         fare_difference = 0
 
-        import re
-
         fare_match = re.search(
-            r"(?:fare difference|difference)\D*(?:₹|rs\.?|inr)?\s*([0-9,]+)",
+            r"(?:fare difference|difference)\D*"
+            r"(?:₹|rs\.?|inr)?\s*([0-9,]+)",
             text
         )
 
@@ -184,6 +194,7 @@ def extract_intent(message):
                 fare_match.group(1).replace(",", "")
             )
 
+        # Intent labels
         intent = []
 
         if requested_refund:
@@ -201,17 +212,22 @@ def extract_intent(message):
         if status == "delayed":
             intent.append("delay")
 
-        sentiment = "negative" if any(
+        # Sentiment
+        if any(
             word in text
             for word in [
                 "angry",
+                "furious",
                 "frustrated",
                 "upset",
                 "terrible",
                 "ridiculous",
                 "disappointed"
             ]
-        ) else "neutral"
+        ):
+            sentiment = "frustrated"
+        else:
+            sentiment = "neutral"
 
         return {
             "status": status,
@@ -226,7 +242,15 @@ def extract_intent(message):
             "missing_information": []
         }
 
+
 def generate_customer_response(customer, intent_data, decision):
+    """
+    Try Gemini for natural-language response.
+
+    If Gemini is unavailable or quota is exhausted,
+    generate a deterministic fallback response from
+    the policy-engine decision.
+    """
 
     prompt = f"""
 You are an airline customer support resolution agent.
@@ -235,17 +259,22 @@ You must respond using ONLY the supplied customer information,
 extracted request and policy decision.
 
 Never invent airline policies.
+
 Never promise an action that is not approved.
+
 Never claim that an escalation has been completed if it has only
 been requested.
 
 CUSTOMER:
+
 {json.dumps(customer, indent=2)}
 
 CUSTOMER REQUEST:
+
 {json.dumps(intent_data, indent=2)}
 
 POLICY ENGINE DECISION:
+
 {json.dumps(decision, indent=2)}
 
 Write a concise, professional response to the customer.
@@ -261,17 +290,121 @@ Requirements:
 7. Do not expose hidden reasoning.
 """
 
+    try:
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=prompt
+        )
 
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=prompt
-    )
+        return response.text.strip()
 
-    return response.text.strip()
+    except Exception as e:
+        print(
+            f"Gemini response generation failed, "
+            f"using deterministic fallback: {e}"
+        )
+
+        # ---------------------------------------------------------
+        # DETERMINISTIC FALLBACK
+        # ---------------------------------------------------------
+
+        customer_name = customer.get("name", "Customer")
+
+        response_lines = [
+            f"Hello {customer_name},",
+            "",
+            "I reviewed your request against the airline's "
+            "disruption policy.",
+            ""
+        ]
+
+        decisions = decision.get("decisions", [])
+
+        if decisions:
+            for item in decisions:
+                action = item.get(
+                    "action",
+                    "Policy decision"
+                )
+
+                status = item.get(
+                    "status",
+                    ""
+                )
+
+                reason = item.get(
+                    "reason",
+                    ""
+                )
+
+                readable_action = (
+                    action
+                    .replace("_", " ")
+                    .title()
+                )
+
+                if status == "APPROVED":
+                    line = f"• {readable_action}: Approved"
+
+                    if reason:
+                        line += f" — {reason}"
+
+                    response_lines.append(line)
+
+                elif status == "NOT_APPROVED":
+                    line = f"• {readable_action}: Not approved"
+
+                    if reason:
+                        line += f" — {reason}"
+
+                    response_lines.append(line)
+
+                elif status in ["ESCALATE", "ESCALATION_REQUIRED"]:
+                    line = f"• {readable_action}: Supervisor review required"
+
+                    if reason:
+                        line += f" — {reason}"
+
+                    response_lines.append(line)
+
+        else:
+            # Generic fallback if decision structure is different
+            final_status = decision.get(
+                "final_status",
+                decision.get("status", "POLICY_RESPONSE")
+            )
+
+            response_lines.append(
+                f"• Resolution status: "
+                f"{str(final_status).replace('_', ' ').title()}"
+            )
+
+            if decision.get("escalation_required"):
+                response_lines.append(
+                    "• Supervisor review is required for "
+                    "this request."
+                )
+
+        if decision.get("escalation_required"):
+            response_lines.extend(
+                [
+                    "",
+                    "Some part of your request requires "
+                    "supervisor review under the applicable policy."
+                ]
+            )
+
+        response_lines.extend(
+            [
+                "",
+                "I hope this clarifies the available resolution."
+            ]
+        )
+
+        return "\n".join(response_lines)
 
 
 def process_request(pnr, message):
-
     customer = get_customer(pnr)
 
     if not customer:
@@ -282,14 +415,17 @@ def process_request(pnr, message):
 
     bookings = get_customer_booking(pnr)
 
+    # Step 1: Understand customer request
     intent_data = extract_intent(message)
 
+    # Step 2: Apply deterministic airline policy
     decision = evaluate_request(
         customer,
         bookings,
         intent_data
     )
 
+    # Step 3: Generate customer-facing response
     customer_response = generate_customer_response(
         customer,
         intent_data,
