@@ -7,8 +7,7 @@ import AuditTrail from "./components/AuditTrail";
 import "./index.css";
 
 
-const API_URL =
-  import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const API_URL = "https://ainios-airline-resolution-agent.onrender.com";
 
 function App() {
   const [selectedCustomer, setSelectedCustomer] = useState(null);
