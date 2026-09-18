@@ -1,0 +1,65 @@
+{
+  "cancellation_rebooking": {
+    "condition": "airline_caused_cancellation",
+    "options": [
+      "free_rebooking_next_available_within_24_hours",
+      "full_refund"
+    ]
+  },
+
+  "delay_compensation": [
+    {
+      "condition": "delay_less_than_or_equal_to_3_hours",
+      "benefits": []
+    },
+    {
+      "condition": "delay_more_than_3_hours",
+      "benefits": [
+        "500_meal_voucher",
+        "lounge_access"
+      ]
+    },
+    {
+      "condition": "delay_more_than_5_hours",
+      "benefits": [
+        "500_meal_voucher",
+        "lounge_access",
+        "hotel_accommodation_for_delayed_hours"
+      ]
+    }
+  ],
+
+  "refund_processing": {
+    "airline_caused_cancellation": {
+      "amount": "full",
+      "processing_time": "within_7_business_days",
+      "refund_method": "original_payment_method"
+    }
+  },
+
+  "fare_difference": {
+    "voluntary_higher_fare_rebooking": {
+      "customer_pays_fare_difference": true,
+      "agent_approval_limit": 1500
+    }
+  },
+
+  "loyalty_tier": {
+    "Gold": {
+      "priority_rebooking": true,
+      "additional_compensation": false
+    },
+    "Platinum": {
+      "priority_rebooking": true,
+      "additional_compensation": false
+    }
+  },
+
+  "escalation_rules": [
+    "compensation_beyond_stated_policy",
+    "fare_difference_above_1500",
+    "legal_action_or_formal_complaint",
+    "non_airline_caused_cancellation_exceptions",
+    "changing_refund_method"
+  ]
+}
